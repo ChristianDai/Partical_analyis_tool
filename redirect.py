@@ -1,0 +1,138 @@
+import streamlit as st
+import io
+import contextlib
+import sys
+import re
+import threading
+
+class _Redirect:
+    class IOStuff(io.StringIO):
+        def __init__(self, trigger, max_buffer, buffer_separator, regex, dup, need_dup, on_thread):
+            super().__init__()
+            self._trigger = trigger
+            self._max_buffer = max_buffer
+            self._buffer_separator = buffer_separator
+            self._regex = regex and re.compile(regex)
+            self._dup = dup
+            self._need_dup = need_dup
+            self._on_thread = on_thread
+            self._buffer = ''
+
+        def write(self, __s: str) -> int:
+            if self._on_thread == threading.get_ident():
+                self._buffer += __s
+                if self._buffer_separator in self._buffer:
+                    parts = self._buffer.split(self._buffer_separator)
+                    self._buffer = parts.pop()
+                    for part in parts:
+                        self._write_output(part)
+            if self._on_thread != threading.get_ident() or self._need_dup:
+                self._dup.write(__s)
+            return len(__s)
+
+        def _write_output(self, part):
+            if self._regex is None or self._regex.search(part):
+                if self._max_buffer:
+                    if len(part) > self._max_buffer:
+                        part = part[-self._max_buffer:]
+                self._trigger(part)
+
+        def flush(self):
+            if self._buffer:
+                self._write_output(self._buffer)
+                self._buffer = ''
+
+        def get_filtered_output(self):
+            return self.getvalue()
+
+        def print_at_end(self):
+            self.flush()
+            self._trigger(self.get_filtered_output())
+
+    def __init__(self, stdout=None, stderr=False, format=None, to=None, max_buffer=None, buffer_separator='\n',
+                 regex=None, duplicate_out=False):
+        self.io_args = {'trigger': self._write, 'max_buffer': max_buffer, 'buffer_separator': buffer_separator,
+                        'regex': regex, 'on_thread': threading.get_ident()}
+        self.redirections = []
+        self.st = None
+        self.stderr = stderr is True
+        self.stdout = stdout is True or (stdout is None and not self.stderr)
+        self.format = format or 'code'
+        self.to = to
+        self.fun = None
+        self.duplicate_out = duplicate_out or None
+        self.active_nested = None
+
+        if not self.stdout and not self.stderr:
+            raise ValueError("one of stdout or stderr must be True")
+
+        if self.format not in ['text', 'markdown', 'latex', 'code', 'write']:
+            raise ValueError(
+                f"format need oneof the following: {', '.join(['text', 'markdown', 'latex', 'code', 'write'])}")
+
+        if self.to and (not hasattr(self.to, 'text') or not hasattr(self.to, 'empty')):
+            raise ValueError(f"'to' is not a streamlit container object")
+
+    def __enter__(self):
+        if self.st is not None:
+            if self.to is None:
+                if self.active_nested is None:
+                    self.active_nested = self(format=self.format, max_buffer=self.io_args['max_buffer'],
+                                              buffer_separator=self.io_args['buffer_separator'],
+                                              regex=self.io_args['regex'], duplicate_out=self.duplicate_out)
+                return self.active_nested.__enter__()
+            else:
+                raise Exception("Already entered")
+        to = self.to or st
+
+        to.text(f"Redirected output from "
+                f"{'stdout and stderr' if self.stdout and self.stderr else 'stdout' if self.stdout else 'stderr'}"
+                f"{' [' + self.io_args['regex'] + ']' if self.io_args['regex'] else ''}"
+                f":")
+        self.st = to.empty()
+        self.fun = getattr(self.st, self.format)
+
+        io_obj = None
+
+        def redirect(to_duplicate, context_redirect):
+            nonlocal io_obj
+            io_obj = _Redirect.IOStuff(need_dup=self.duplicate_out and True, dup=to_duplicate, **self.io_args)
+            redirection = context_redirect(io_obj)
+            self.redirections.append((redirection, io_obj))
+            redirection.__enter__()
+
+        if self.stderr:
+            redirect(sys.stderr, contextlib.redirect_stderr)
+        if self.stdout:
+            redirect(sys.stdout, contextlib.redirect_stdout)
+
+        return io_obj
+
+    def __call__(self, to=None, format=None, max_buffer=None, buffer_separator='\n', regex=None, duplicate_out=False):
+        return _Redirect(self.stdout, self.stderr, format=format, to=to, max_buffer=max_buffer,
+                         buffer_separator=buffer_separator, regex=regex, duplicate_out=duplicate_out)
+
+    def __exit__(self, *exc):
+        if self.active_nested is not None:
+            nested = self.active_nested
+            if nested.active_nested is None:
+                self.active_nested = None
+            return nested.__exit__(*exc)
+
+        res = None
+        for redirection, io_obj in reversed(self.redirections):
+            res = redirection.__exit__(*exc)
+            io_obj.print_at_end()
+
+        self.redirections = []
+        self.st = None
+        self.fun = None
+        return res
+
+    def _write(self, data):
+        self.fun(data)
+
+
+stdout = _Redirect()
+stderr = _Redirect(stderr=True)
+stdouterr = _Redirect(stdout=True, stderr=True)
