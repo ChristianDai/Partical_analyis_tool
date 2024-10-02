@@ -237,22 +237,44 @@ def run_particle_analysis(image_path):
 
     return original_image, result_image_with_boxes, fig_cdf, fig_freq, particle_sizes
 
+# Particle Size Distribution Analysis page
+@st.cache_data(show_spinner=False)
+def run_particle_analysis(image_path):
+    """Cache the results after image processing"""
+    # process_image function should return particle size array and other image data
+    original_image, result_image_with_boxes, fig_cdf, fig_freq, particle_sizes = process_image(image_path)
+
+    return original_image, result_image_with_boxes, fig_cdf, fig_freq, particle_sizes
+
+
+# Particle Size Distribution Analysis page
 def particle_size_distribution_page():
-    st.title("Particle Size Distribution Analysis (TIF Support)")
+    st.title("Particle Size Distribution Analysis (TIF, JPEG Support)")
 
     # File upload section
-    uploaded_file = st.file_uploader("Choose a .tif image...", type="tif")
+    uploaded_file = st.file_uploader("Choose an image...", type=["tif", "jpeg", "jpg"])
+
+    # If a new file is uploaded, clear previous analysis results from session state
+    if uploaded_file is not None:
+        # Generate a unique key for the uploaded file, like its name or content hash
+        file_key = uploaded_file.name
+
+        # Check if the file has changed (based on file name or some unique property)
+        if "uploaded_file_key" not in st.session_state or st.session_state.uploaded_file_key != file_key:
+            st.session_state.uploaded_file_key = file_key  # Save the new file key
+            st.cache_data.clear()  # Clear previous cache
+            st.session_state.analysis_result = None  # Clear any previous analysis results
 
     # Display Run button in advance
     if st.button("Run", key="run_analysis_button"):
         if uploaded_file is not None:
             # Save the uploaded file
-            with open("uploaded_image.tif", "wb") as f:
+            with open("uploaded_image." + uploaded_file.name.split('.')[-1], "wb") as f:
                 f.write(uploaded_file.getbuffer())
 
             # Call the processing function and cache results in Session State to avoid reprocessing
             original_image, result_image_with_boxes, fig_cdf, fig_freq, particle_sizes = run_particle_analysis(
-                "uploaded_image.tif")
+                "uploaded_image." + uploaded_file.name.split('.')[-1])
 
             if particle_sizes is not None:
                 # Calculate D10, D50, D90 and store them in Session State
@@ -274,10 +296,10 @@ def particle_size_distribution_page():
                 'd90': d90
             }
         else:
-            st.warning("Please upload a .tif file to proceed.")
+            st.warning("Please upload a valid image file to proceed.")
 
     # If analysis results are cached, display sidebar options and images
-    if 'analysis_result' in st.session_state:
+    if 'analysis_result' in st.session_state and st.session_state.analysis_result is not None:
         analysis_result = st.session_state.analysis_result
 
         # Sidebar image selection box
@@ -289,7 +311,7 @@ def particle_size_distribution_page():
 
         # Display different images and graphs based on selection
         if show_original:
-            st.image(analysis_result['original_image'], caption='Original Image (TIF)', use_column_width=True)
+            st.image(analysis_result['original_image'], caption='Original Image', use_column_width=True)
         if show_processed:
             st.image(analysis_result['result_image_with_boxes'], caption='Processed Image with Particles Highlighted',
                      use_column_width=True)
@@ -304,9 +326,11 @@ def particle_size_distribution_page():
         if show_freq:
             st.plotly_chart(analysis_result['fig_freq'])
 
+
 # Page dictionary mapping, including all functional modules
 page_names_to_funcs = {
-    "Home page": lambda: (st.title("Welcome to the Particle Analyse Tool"), st.write("Use it")),
+    "Home page": lambda: (st.title("Welcome to the Particle Analyse Tool"), st.write("You can choose the"
+                                                                                     " function on the side")),
     "Symbolic Regression Application": symbolic_regression_application,
     "Particle Size Distribution": particle_size_distribution_page,
     "pH Control Simulation": ph_simulation_main,
