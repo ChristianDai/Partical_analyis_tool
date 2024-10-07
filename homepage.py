@@ -2,7 +2,8 @@ from Reinforcement_pH import main as ph_simulation_main
 from PSD import process_image
 
 # Import Symbolic Regression Application modules
-from db_initialization import initialize_database
+import tifffile as tiff
+from PIL import Image
 from preprocessing_page import preprocessing_page
 from white_box_modelling_page import white_box_modelling_page
 from black_box_modelling_page_train import black_box_modelling_page
@@ -16,6 +17,7 @@ import random
 import string
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import cv2
 
 # MongoDB connection
 client = pymongo.MongoClient("mongodb://localhost:27017/")  # Replace with your MongoDB connection string
@@ -228,103 +230,100 @@ def symbolic_regression_application():
     elif sub_page == "Black Box Modelling":
         black_box_modelling_page()  # Black-box model page
 
-# Particle Size Distribution Analysis page
-@st.cache_data(show_spinner=False)
-def run_particle_analysis(image_path):
-    """Cache the results after image processing"""
-    # process_image function should return particle size array and other image data
-    original_image, result_image_with_boxes, fig_cdf, fig_freq, particle_sizes = process_image(image_path)
 
-    return original_image, result_image_with_boxes, fig_cdf, fig_freq, particle_sizes
-
-# Particle Size Distribution Analysis page
-@st.cache_data(show_spinner=False)
-def run_particle_analysis(image_path):
-    """Cache the results after image processing"""
-    # process_image function should return particle size array and other image data
-    original_image, result_image_with_boxes, fig_cdf, fig_freq, particle_sizes = process_image(image_path)
-
-    return original_image, result_image_with_boxes, fig_cdf, fig_freq, particle_sizes
-
-
-# Particle Size Distribution Analysis page
 def particle_size_distribution_page():
-    st.title("Particle Size Distribution Analysis (TIF, JPEG Support)")
+    st.title("Particle Size Distribution Analysis with SAM")
 
-    # File upload section
-    uploaded_file = st.file_uploader("Choose an image...", type=["tif", "jpeg", "jpg"])
+    # 文件上传
+    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "tif"])
 
-    # If a new file is uploaded, clear previous analysis results from session state
-    if uploaded_file is not None:
-        # Generate a unique key for the uploaded file, like its name or content hash
-        file_key = uploaded_file.name
+    # 增加运行按钮
+    run_analysis = st.button("Run Analysis")
 
-        # Check if the file has changed (based on file name or some unique property)
-        if "uploaded_file_key" not in st.session_state or st.session_state.uploaded_file_key != file_key:
-            st.session_state.uploaded_file_key = file_key  # Save the new file key
-            st.cache_data.clear()  # Clear previous cache
-            st.session_state.analysis_result = None  # Clear any previous analysis results
+    # 用于缓存的session state
+    if 'processed_image' not in st.session_state:
+        st.session_state.processed_image = None
+    if 'fig_cdf' not in st.session_state:
+        st.session_state.fig_cdf = None
+    if 'fig_freq' not in st.session_state:
+        st.session_state.fig_freq = None
+    if 'd10' not in st.session_state:
+        st.session_state.d10 = None
+    if 'd50' not in st.session_state:
+        st.session_state.d50 = None
+    if 'd90' not in st.session_state:
+        st.session_state.d90 = None
+    if 'image_cv' not in st.session_state:
+        st.session_state.image_cv = None  # 用于缓存原始图像
 
-    # Display Run button in advance
-    if st.button("Run", key="run_analysis_button"):
-        if uploaded_file is not None:
-            # Save the uploaded file
-            with open("uploaded_image." + uploaded_file.name.split('.')[-1], "wb") as f:
-                f.write(uploaded_file.getbuffer())
-
-            # Call the processing function and cache results in Session State to avoid reprocessing
-            original_image, result_image_with_boxes, fig_cdf, fig_freq, particle_sizes = run_particle_analysis(
-                "uploaded_image." + uploaded_file.name.split('.')[-1])
-
-            if particle_sizes is not None:
-                # Calculate D10, D50, D90 and store them in Session State
-                d10 = np.percentile(particle_sizes, 10)
-                d50 = np.percentile(particle_sizes, 50)
-                d90 = np.percentile(particle_sizes, 90)
-            else:
-                d10, d50, d90 = 0, 0, 0  # Display default values if no results
-
-            # Store analysis results in Session State for display switching without reanalysis
-            st.session_state.analysis_result = {
-                'original_image': original_image,
-                'result_image_with_boxes': result_image_with_boxes,
-                'fig_cdf': fig_cdf,
-                'fig_freq': fig_freq,
-                'particle_sizes': particle_sizes,
-                'd10': d10,
-                'd50': d50,
-                'd90': d90
-            }
+    # 图像处理逻辑
+    def load_image(image_file):
+        # Open the uploaded image
+        if image_file.type == "image/tiff":
+            image = tiff.imread(image_file)
+            image = Image.fromarray(image)
         else:
-            st.warning("Please upload a valid image file to proceed.")
+            image = Image.open(image_file)
 
-    # If analysis results are cached, display sidebar options and images
-    if 'analysis_result' in st.session_state and st.session_state.analysis_result is not None:
-        analysis_result = st.session_state.analysis_result
+        # Convert 16-bit TIFF to 8-bit if necessary
+        if image.mode == "I;16":
+            image = image.point(lambda i: i * (1 / 256)).convert('L')
 
-        # Sidebar image selection box
-        st.sidebar.write("Select which images or graphs to display:")
-        show_original = st.sidebar.checkbox("Show Original Image", value=True, key="show_original")
-        show_processed = st.sidebar.checkbox("Show Processed Image", value=True, key="show_processed")
-        show_cdf = st.sidebar.checkbox("Show CDF Graph", value=True, key="show_cdf")
-        show_freq = st.sidebar.checkbox("Show Frequency Distribution Graph", value=True, key="show_freq")
+        return image
 
-        # Display different images and graphs based on selection
-        if show_original:
-            st.image(analysis_result['original_image'], caption='Original Image', use_column_width=True)
-        if show_processed:
-            st.image(analysis_result['result_image_with_boxes'], caption='Processed Image with Particles Highlighted',
-                     use_column_width=True)
+    # 如果上传了图像，则显示上传的原始图像
+    if uploaded_file:
+        image = load_image(uploaded_file)
 
-            # Display D10, D50, D90 below the processed image
-            st.markdown(f"**D10:** {analysis_result['d10']} ")
-            st.markdown(f"**D50:** {analysis_result['d50']} ")
-            st.markdown(f"**D90:** {analysis_result['d90']} ")
+        # Convert the image to an array for OpenCV display
+        image_cv = np.array(image)
+        if len(image_cv.shape) == 2:  # If grayscale, convert to BGR
+            image_cv = cv2.cvtColor(image_cv, cv2.COLOR_GRAY2BGR)
+        else:
+            image_cv = cv2.cvtColor(image_cv, cv2.COLOR_RGB2BGR)  # Convert RGB to BGR for OpenCV
 
-        if show_cdf:
-            st.plotly_chart(analysis_result['fig_cdf'])
-        if show_freq:
-            st.plotly_chart(analysis_result['fig_freq'])
+        st.session_state.image_cv = image_cv  # 缓存原始图像
+
+    # 点击运行按钮后分析图像
+    if run_analysis and uploaded_file is not None:
+        processed_image, fig_cdf, fig_freq, d10, d50, d90 = process_image(image)
+
+        # 缓存处理结果
+        st.session_state.processed_image = processed_image
+        st.session_state.fig_cdf = fig_cdf
+        st.session_state.fig_freq = fig_freq
+        st.session_state.d10 = d10
+        st.session_state.d50 = d50
+        st.session_state.d90 = d90
+
+    # 增加显示/隐藏图片的按钮
+    if st.session_state.image_cv is not None:
+        st.write("Choose which images to display:")
+
+        # 增加用于显示原始图像的选项
+        display_original = st.checkbox("Show Original Image", value=True)
+        display_processed_image = st.checkbox("Show Processed Image", value=True)
+        display_cdf = st.checkbox("Show CDF Plot", value=True)
+        display_freq = st.checkbox("Show Frequency Distribution Plot", value=True)
+
+        # 根据用户的选择显示图片
+        if display_original:
+            st.image(st.session_state.image_cv, caption='Original Image', use_column_width=True)
+
+        if st.session_state.processed_image is not None:
+            if display_processed_image:
+                st.image(st.session_state.processed_image, caption='Processed Image with Bounding Boxes',
+                         use_column_width=True)
+
+            # 显示 D10, D50, D90
+            st.write(f"D10 = {st.session_state.d10:.2f} nm")
+            st.write(f"D50 = {st.session_state.d50:.2f} nm")
+            st.write(f"D90 = {st.session_state.d90:.2f} nm")
+
+            if display_cdf:
+                st.plotly_chart(st.session_state.fig_cdf)
+            if display_freq:
+                st.plotly_chart(st.session_state.fig_freq)
 
 
 # Page dictionary mapping, including all functional modules
@@ -366,3 +365,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
