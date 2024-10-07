@@ -1,5 +1,3 @@
-# image_processing.py
-
 import numpy as np
 import cv2
 import pytesseract
@@ -10,7 +8,7 @@ from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
 from PIL import Image
 
 # Model path
-sam_checkpoint_path = "E:\\python\\projects\\env_ma_part1.2\\models\\sam_vit_b_01ec64.pth"
+sam_checkpoint_path = "E:\python\projects\env_ma_part1.2\models\sam_vit_b_01ec64.pth"
 
 # Load the SAM model to GPU
 def load_sam_model(checkpoint_path):
