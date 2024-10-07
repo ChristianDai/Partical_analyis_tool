@@ -1,13 +1,14 @@
 from Reinforcement_pH import main as ph_simulation_main
-from PSD import process_image
+from psdtest import process_image,load_sam_model
 
 # Import Symbolic Regression Application modules
-import tifffile as tiff
 from PIL import Image
 from preprocessing_page import preprocessing_page
 from white_box_modelling_page import white_box_modelling_page
 from black_box_modelling_page_train import black_box_modelling_page
 
+
+import tifffile as tiff
 import streamlit as st
 import pymongo
 import bcrypt
@@ -234,6 +235,12 @@ def symbolic_regression_application():
 def particle_size_distribution_page():
     st.title("Particle Size Distribution Analysis with SAM")
 
+    # 模型选择，允许用户选择不同的SAM模型
+    model_type = st.selectbox("Select SAM Model(vit_h is more accurate)", ["vit_b", "vit_h"])
+
+    # 加载所选模型
+    mask_generator = load_sam_model(model_type)
+
     # 文件上传
     uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "tif"])
 
@@ -286,7 +293,8 @@ def particle_size_distribution_page():
 
     # 点击运行按钮后分析图像
     if run_analysis and uploaded_file is not None:
-        processed_image, fig_cdf, fig_freq, d10, d50, d90 = process_image(image)
+        # 使用选择的SAM模型进行图像处理
+        processed_image, fig_cdf, fig_freq, d10, d50, d90 = process_image(image, mask_generator)
 
         # 缓存处理结果
         st.session_state.processed_image = processed_image
