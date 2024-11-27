@@ -1,5 +1,5 @@
 from Reinforcement_pH import main as ph_simulation_main
-from psdtest import process_image,load_sam_model
+from PSD import process_image,load_sam_model
 
 # Import Symbolic Regression Application modules
 from PIL import Image
@@ -295,6 +295,7 @@ def particle_size_distribution_page():
     if run_analysis and uploaded_file is not None:
         # 使用选择的SAM模型进行图像处理
         processed_image, fig_cdf, fig_freq, d10, d50, d90 = process_image(image, mask_generator)
+
 
         # 缓存处理结果
         st.session_state.processed_image = processed_image
