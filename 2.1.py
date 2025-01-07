@@ -33,16 +33,14 @@ import tifffile as tiff
 
 
 def initialize_manual_mode():
-    """Initialize state for manual selection mode"""
+    """Initialize state for manual selection mode."""
     if 'manual_mode' not in st.session_state:
         st.session_state.manual_mode = {
-            'points': [],  # Store point coordinates
-            'point_labels': [],  # 1 for include, 0 for exclude
             'boxes': [],  # Store box coordinates
             'current_mask': None,  # Current segmentation mask
             'combined_mask': None,  # Accumulated mask for all selections
+            'mask_stack': [],  # Stack to store each step's mask
             'predictor_set': False,  # Track if image is set in predictor
-            'tool_mode': 'point',  # Current tool (point/box)
             'ready_for_analysis': False
         }
 
@@ -61,8 +59,6 @@ def initialize_manual_mode():
         st.session_state.manual_predictor = load_manual_predictor(model_type)
         if st.session_state.manual_predictor is None:
             st.error("Manual predictor initialization failed. Please check the model configuration.")
-
-
 
 def load_manual_predictor(model_type):
     """
@@ -94,66 +90,6 @@ def load_manual_predictor(model_type):
         return None
 
 
-# === MASK HANDLING FUNCTIONS ===
-def update_mask():
-    """Generate/update mask using current points and boxes."""
-    if 'manual_predictor' not in st.session_state or st.session_state.manual_predictor is None:
-        st.error("Manual predictor is not initialized. Please check your setup.")
-        return
-
-    predictor = st.session_state.manual_predictor
-
-    # 确保预测器已设置图像
-    if not st.session_state.manual_mode['predictor_set']:
-        if 'image_rgb' in st.session_state and st.session_state.image_rgb is not None:
-            predictor.set_image(st.session_state.image_rgb)
-            st.session_state.manual_mode['predictor_set'] = True
-        else:
-            st.error("No image loaded. Please upload an image first.")
-            return
-
-    # 调试当前点和框数据
-    points = np.array(st.session_state.manual_mode['points'])
-    labels = np.array(st.session_state.manual_mode['point_labels'])
-    boxes = st.session_state.manual_mode.get('boxes', [])
-    st.write(f"Points: {points}, Labels: {labels}")
-    st.write(f"Boxes: {boxes}")
-
-    try:
-        # 初始化或获取 combined_mask
-        combined_mask = st.session_state.manual_mode.get(
-            'combined_mask',
-            np.zeros_like(st.session_state.image_rgb[:, :, 0], dtype=np.uint8)
-        )
-
-        if len(points) > 0 or len(boxes) > 0:
-            # 调用预测器生成掩码
-            masks, scores, logits = predictor.predict(
-                point_coords=points if len(points) > 0 else None,
-                point_labels=labels if len(points) > 0 else None,
-                box=np.array(boxes) if len(boxes) > 0 else None,
-                multimask_output=False
-            )
-
-            # 调试预测返回值
-            st.write(f"Predicted Masks: {len(masks) if masks is not None else 'None'}")
-            st.write(f"Scores: {scores if scores is not None else 'None'}")
-
-            # 累积生成的掩码
-            for mask in masks:
-                combined_mask = cv2.bitwise_or(combined_mask, mask.astype('uint8'))
-
-        # 更新会话状态中的 combined_mask
-        st.session_state.manual_mode['combined_mask'] = combined_mask
-        st.session_state.manual_mode['current_mask'] = combined_mask
-
-        # 显示掩码叠加
-        overlay = overlay_mask(st.session_state.image_rgb, combined_mask, alpha=0.5)
-        st.image(overlay, caption="Current Combined Selection", use_column_width=True)
-
-    except Exception as e:
-        st.error(f"Error generating mask: {str(e)}")
-
 def overlay_mask(image, mask, alpha=0.5):
     """
     Create transparent overlay of mask on image
@@ -182,43 +118,6 @@ def overlay_mask(image, mask, alpha=0.5):
 
     return overlay
 
-# === INTERACTION HANDLERS ===
-def handle_point_interaction(x, y, is_positive):
-    """Handle point interactions for manual mode."""
-    if 'manual_mode' not in st.session_state or 'points' not in st.session_state.manual_mode:
-        st.warning("Manual mode not initialized. Initializing...")
-        initialize_manual_mode()
-
-    st.session_state.manual_mode['points'].append([x, y])
-    st.session_state.manual_mode['point_labels'].append(1 if is_positive else 0)
-
-    update_mask()
-    st.rerun()
-
-def handle_box_interaction(x1, y1, x2, y2, scale_factor_x, scale_factor_y):
-    """Handle box interactions for manual mode."""
-
-    original_x1 = round(x1 * scale_factor_x)
-    original_y1 = round(y1 * scale_factor_y)
-    original_x2 = round(x2 * scale_factor_x)
-    original_y2 = round(y2 * scale_factor_y)
-
-    box = [
-        min(original_x1, original_x2),
-        min(original_y1, original_y2),
-        max(original_x1, original_x2),
-        max(original_y1, original_y2)
-    ]
-
-    if 'manual_mode' in st.session_state and 'boxes' in st.session_state.manual_mode:
-        st.session_state.manual_mode['boxes'].append(box)
-    else:
-        st.error("Manual mode is not initialized. Please ensure it is initialized before interaction.")
-
-    update_mask()
-    st.rerun()
-
-
 def finalize_selection():
     """Finalize the selection for analysis."""
     combined_mask = st.session_state.manual_mode.get('combined_mask', None)
@@ -235,231 +134,184 @@ def finalize_selection():
             for i in range(1, num_regions)
         }
 
-        st.success("Selection finalized. Ready for analysis.")
-        st.write(f"Final combined mask area (pixels): {np.sum(combined_mask)}")
-        st.write(f"Number of regions selected: {num_regions - 1}")
-
     else:
         st.warning("No valid selection available to finalize. Please make a selection.")
 
 
-
-
 def add_manual_interface():
-    if 'manual_mode' not in st.session_state:
-        initialize_manual_mode()
+    def add_manual_interface():
+        if 'manual_mode' not in st.session_state:
+            initialize_manual_mode()
 
-    st.markdown("### Interactive Particle Selection")
-    tool_col1, tool_col2 = st.columns([1, 3])
+        st.markdown("### Interactive Particle Selection")
 
-    with tool_col1:
-        tool = st.selectbox(
-            "Tool",
-            ["Point", "Box"],
-            help="Point: Click to select particles\nBox: Draw region"
+        st.markdown("""
+        **Instructions:**
+        - Single click: Select small particles.
+        - Box selection: Draw a box to select larger regions of interest.
+        - **Undo:** Reverts the last selection. 
+        - **Clear All:** Removes all selections.
+        - **Confirm Selection:** Finalizes the current selection for further processing.
+        """)
+
+        # 获取调整后的图像
+        adjusted_image = st.session_state.get("adjusted_image", None)
+        adjusted_scale_ratio = st.session_state.get("adjusted_scale_ratio", 1.0)
+
+        if adjusted_image is None:
+            st.error("Adjusted image is not available. Please configure 'Select Scale Area' first.")
+            return
+
+        # 显示画布并捕获结果
+        canvas_result = st_canvas(
+            fill_color="rgba(0, 0, 0, 0)",
+            stroke_width=2,
+            stroke_color="#FF0000",
+            background_image=Image.fromarray(adjusted_image),
+            height=adjusted_image.shape[0],
+            width=adjusted_image.shape[1],
+            drawing_mode="rect",
+            key="manual_canvas"
         )
 
-    with tool_col2:
-        st.markdown("""
-               **Instructions:**
-               - Left click: Add to selection (Green)
-               - Right click: Remove from selection (Red)
-               - Box: Draw around regions of interest
-               """)
+        if canvas_result and canvas_result.json_data and "objects" in canvas_result.json_data:
+            objects = canvas_result.json_data["objects"]
+            st.session_state["manual_canvas_data"] = canvas_result.json_data
 
-    adjusted_image = st.session_state.get("adjusted_image", None)
-    adjusted_scale_ratio = st.session_state.get("adjusted_scale_ratio", 1.0)
+            if len(objects) > len(st.session_state.manual_mode['mask_stack']):
+                last_obj = objects[-1]
 
-    if adjusted_image is None:
-        st.error("Adjusted image is not available. Please configure 'Select Scale Area' first.")
-        return
+                canvas_x1, canvas_y1 = last_obj["left"], last_obj["top"]
+                canvas_x2 = canvas_x1 + last_obj["width"]
+                canvas_y2 = canvas_y1 + last_obj["height"]
 
-    canvas_result = st_canvas(
-        fill_color="rgba(0, 0, 0, 0)",
-        stroke_width=2,
-        stroke_color="#00FF00" if tool == "Point" else "#FF0000",
-        background_image=Image.fromarray(adjusted_image),
-        height=adjusted_image.shape[0],
-        width=adjusted_image.shape[1],
-        drawing_mode="point" if tool == "Point" else "rect",
-        key="manual_canvas"
-    )
+                original_x1 = int(canvas_x1 / adjusted_scale_ratio)
+                original_y1 = int(canvas_y1 / adjusted_scale_ratio)
+                original_x2 = int(canvas_x2 / adjusted_scale_ratio)
+                original_y2 = int(canvas_y2 / adjusted_scale_ratio)
 
-    if canvas_result.json_data and "objects" in canvas_result.json_data:
-        if len(canvas_result.json_data["objects"]) > 0:
-            last_obj = canvas_result.json_data["objects"][-1]
-            if tool == "Box":
-                try:
-                    # Capture and debug canvas coordinates
-                    canvas_x1, canvas_y1 = last_obj["left"], last_obj["top"]
-                    canvas_x2 = canvas_x1 + last_obj["width"]
-                    canvas_y2 = canvas_y1 + last_obj["height"]
-
-                    # Transform to original coordinates
-                    original_x1 = int(canvas_x1 / adjusted_scale_ratio)
-                    original_y1 = int(canvas_y1 / adjusted_scale_ratio)
-                    original_x2 = int(canvas_x2 / adjusted_scale_ratio)
-                    original_y2 = int(canvas_y2 / adjusted_scale_ratio)
-
-
-                    image_height, image_width = st.session_state["image_rgb"].shape[:2]
-
-                    # Clip coordinates to image bounds
-                    original_x1 = max(0, min(original_x1, image_width - 1))
-                    original_y1 = max(0, min(original_y1, image_height - 1))
-                    original_x2 = max(0, min(original_x2, image_width - 1))
-                    original_y2 = max(0, min(original_y2, image_height - 1))
-
-                    # Create the selection mask
-                    selection_mask = np.zeros((image_height, image_width), dtype=np.uint8)
-                    cv2.rectangle(selection_mask, (original_x1, original_y1), (original_x2, original_y2), 255, -1)
-
-                    # Debug the selection mask
-                    overlay_selection = overlay_mask(st.session_state["image_rgb"], selection_mask, alpha=0.5)
-
-                except Exception as e:
-                    st.error(f"Error processing box selection: {str(e)}")
+                image_height, image_width = st.session_state["image_rgb"].shape[:2]
+                original_x1, original_y1 = max(0, min(original_x1, image_width - 1)), max(0, min(original_y1,
+                                                                                                 image_height - 1))
+                original_x2, original_y2 = max(0, min(original_x2, image_width - 1)), max(0, min(original_y2,
+                                                                                                 image_height - 1))
 
                 manual_predictor = st.session_state.manual_predictor
-                try:
-                    manual_predictor.set_image(st.session_state["image_rgb"])
+                manual_predictor.set_image(st.session_state["image_rgb"])
 
-                    masks, scores, _ = manual_predictor.predict(
-                        point_coords=None,
-                        point_labels=None,
-                        box=np.array([original_x1, original_y1, original_x2, original_y2]),
-                        multimask_output=True
-                    )
+                masks, scores, _ = manual_predictor.predict(
+                    point_coords=None,
+                    point_labels=None,
+                    box=np.array([original_x1, original_y1, original_x2, original_y2]),
+                    multimask_output=True
+                )
 
-                    if masks is None or len(masks) == 0 or scores is None:
-                        raise ValueError("No masks were generated or scores are invalid.")
-
-                    # 获取最佳掩码
+                if masks is None or len(masks) == 0 or scores is None:
+                    st.error("No masks were generated. Please try again.")
+                else:
                     best_mask_idx = np.argmax(scores)
                     best_mask = masks[best_mask_idx].astype(np.uint8)
+                    update_combined_mask(best_mask)
 
-                    if best_mask.shape[:2] != selection_mask.shape[:2]:
-                        selection_mask = cv2.resize(
-                            selection_mask,
-                            (best_mask.shape[1], best_mask.shape[0]),
-                            interpolation=cv2.INTER_NEAREST
-                        )
+        st.markdown("### Preview of Selected Regions")
+        combined_mask = st.session_state.manual_mode.get('combined_mask', None)
 
-                    final_mask = cv2.bitwise_and(best_mask, best_mask, mask=selection_mask)
-
-                    if np.sum(final_mask) == 0:
-                        st.warning("Final mask is empty. No overlap between selection and best mask.")
-                    if "combined_mask" not in st.session_state.manual_mode or st.session_state.manual_mode["combined_mask"] is None:
-                        st.session_state.manual_mode["combined_mask"] = final_mask
-                    else:
-                        st.session_state.manual_mode["combined_mask"] = cv2.bitwise_or(
-                            st.session_state.manual_mode["combined_mask"], final_mask
-                        )
-
-                    st.session_state.manual_mode["current_mask"] = final_mask
-
-                    show_preview()
-
-                except ValueError as ve:
-                    st.error(f"Validation Error: {str(ve)}")
-                except cv2.error as ce:
-                    st.error(f"OpenCV Error: {str(ce)}")
-                except Exception as e:
-                    st.error(f"Unexpected error: {str(e)}")
-
+        if combined_mask is None or not np.any(combined_mask):
+            st.image(st.session_state.image_rgb, caption="No Selection (Original Image)", use_column_width=True)
         else:
-            st.warning("No selection detected. Please draw a box or click a point on the canvas.")
-    else:
-        st.warning("No interaction detected. Please interact with the canvas.")
-
-    # 添加控件
-    control_col1, control_col2, control_col3 = st.columns(3)
-
-    with control_col1:
-        if st.button("↩️ Undo"):
-            undo_last_action()
-
-    with control_col2:
-        if st.button("🗑️ Clear All"):
-            st.session_state.manual_mode['points'] = []
-            st.session_state.manual_mode['point_labels'] = []
-            st.session_state.manual_mode['boxes'] = []
-            st.session_state.manual_mode['current_mask'] = None
-            st.session_state.manual_mode['combined_mask'] = None
-
-            st.session_state['selection_mask'] = None
-            st.session_state['processed_image'] = None
-
-            initialize_manual_mode()
-            st.rerun()
-
-    with control_col3:
-        if st.button("✨ Confirm Selection", type="primary"):
-            finalize_selection()
-            if st.session_state.manual_mode['current_mask'] is not None:
-                st.session_state.manual_mode['ready_for_analysis'] = True
-
-
-def show_preview():
-    """Show preview of the combined mask"""
-    combined_mask = st.session_state.manual_mode.get('combined_mask', None)
-
-    if combined_mask is not None:
-        if combined_mask.shape[:2] != st.session_state.image_rgb.shape[:2]:
-            combined_mask = cv2.resize(
-                combined_mask.astype('uint8'),
-                (st.session_state.image_rgb.shape[1], st.session_state.image_rgb.shape[0]),
-                interpolation=cv2.INTER_NEAREST
+            overlay = overlay_mask(
+                st.session_state.image_rgb.copy(),
+                combined_mask,
+                alpha=0.35
             )
+            st.image(overlay, caption="Current Selection (All Regions)", use_column_width=True)
 
-        overlay = overlay_mask(
-            st.session_state.image_rgb.copy(),
-            combined_mask,
-            alpha=0.35
-        )
-        st.image(overlay, caption="Current Selection (All Regions)", use_column_width=True)
+        control_col1, control_col2, control_col3 = st.columns(3)
+
+        with control_col1:
+            if st.button("↩️ Undo"):
+                synchronize_canvas_with_stack(canvas_result)
+                undo_last_action()
+                st.rerun()
+
+        with control_col2:
+            if st.button("🗑️ Clear All"):
+                clear_manual_selections()
+                st.rerun()
+
+        with control_col3:
+            if st.button("✨ Confirm Selection", type="primary"):
+                finalize_selection()
+
+    def synchronize_canvas_with_stack(canvas_result):
+        if canvas_result and canvas_result.json_data:
+            canvas_objects = canvas_result.json_data.get("objects", [])
+            current_stack_size = len(st.session_state.manual_mode['mask_stack'])
+
+            while current_stack_size > len(canvas_objects):
+                st.session_state.manual_mode['mask_stack'].pop()
+                current_stack_size -= 1
+
+
+def update_combined_mask(new_mask):
+    manual_mode = st.session_state.manual_mode
+
+    if new_mask is not None and np.any(new_mask):
+        # Only append new masks to the stack
+        if len(manual_mode["mask_stack"]) == 0 or not np.array_equal(new_mask, manual_mode["mask_stack"][-1]):
+            manual_mode["mask_stack"].append(new_mask)
+
+    # Update combined_mask
+    if manual_mode["combined_mask"] is None:
+        manual_mode["combined_mask"] = new_mask
     else:
-        st.warning("No mask available for preview.")
+        manual_mode["combined_mask"] = cv2.bitwise_or(manual_mode["combined_mask"], new_mask)
 
+    manual_mode["current_mask"] = new_mask
+
+
+def clear_manual_selections():
+    """Clear all manual selections."""
+    st.session_state.manual_mode['boxes'] = []
+    st.session_state.manual_mode['current_mask'] = None
+    st.session_state.manual_mode['combined_mask'] = None
+    st.session_state.manual_mode['mask_stack'] = []
+
+    st.session_state['selection_mask'] = None
+    st.session_state['processed_image'] = None
+    st.session_state.preview_image = st.session_state.image_rgb
+
+    st.success("All selections cleared.")
 
 def undo_last_action():
-    """Undo last drawing action"""
-    if len(st.session_state.manual_mode['points']) > 0:
-        st.session_state.manual_mode['points'].pop()
-        st.session_state.manual_mode['point_labels'].pop()
-    elif len(st.session_state.manual_mode['boxes']) > 0:
-        st.session_state.manual_mode['boxes'].pop()
+    manual_mode = st.session_state.manual_mode
 
-    # Regenerate the combined mask from remaining points/boxes
-    st.session_state.manual_mode['combined_mask'] = None  # Reset combined_mask
+    # Synchronize mask_stack with canvas state before undo
+    canvas_data = st.session_state.get("manual_canvas_data", {}).get("objects", [])
+    while len(manual_mode["mask_stack"]) > len(canvas_data):
+        manual_mode["mask_stack"].pop()
 
-    if len(st.session_state.manual_mode['boxes']) > 0:
-        for box in st.session_state.manual_mode['boxes']:
-            original_x1, original_y1, original_x2, original_y2 = box
-            selection_mask = np.zeros(st.session_state.image_rgb.shape[:2], dtype=np.uint8)
-            cv2.rectangle(selection_mask, (original_x1, original_y1), (original_x2, original_y2), 255, -1)
+    # Proceed with undo if stack is not empty
+    if not manual_mode["mask_stack"]:
+        st.warning("No actions to undo.")
+        return
 
-            masks, scores, _ = st.session_state.manual_predictor.predict(
-                point_coords=None,
-                point_labels=None,
-                box=np.array([original_x1, original_y1, original_x2, original_y2]),
-                multimask_output=True
-            )
+    # Pop the last mask and update combined_mask
+    last_mask = manual_mode["mask_stack"].pop()
+    if manual_mode["combined_mask"] is not None:
+        last_mask_binary = (last_mask > 0).astype(np.uint8) * 255
+        inverse_last_mask = cv2.bitwise_not(last_mask_binary)
+        manual_mode["combined_mask"] = cv2.bitwise_and(
+            manual_mode["combined_mask"], inverse_last_mask
+        )
 
-            if masks and len(masks) > 0:
-                best_mask_idx = np.argmax(scores)
-                final_mask = cv2.bitwise_and(masks[best_mask_idx], masks[best_mask_idx], mask=selection_mask)
+    # Reset combined_mask if stack is empty
+    if not manual_mode["mask_stack"]:
+        manual_mode["combined_mask"] = None
 
-                if st.session_state.manual_mode['combined_mask'] is None:
-                    st.session_state.manual_mode['combined_mask'] = final_mask
-                else:
-                    st.session_state.manual_mode['combined_mask'] = cv2.bitwise_or(
-                        st.session_state.manual_mode['combined_mask'], final_mask
-                    )
+    st.info("Last action undone.")
 
-    # Update preview
-    show_preview()
-    st.rerun()
+
 
 
 # Configure Streamlit page settings
@@ -1570,18 +1422,9 @@ def segmentation_and_size_analysis(image_cropped, mask_generator, grad_thresh_va
     Returns:
         filtered_masks, equiv_diameters_array, areas, size_metrics
     """
-    st.write("Debugging input parameters:")
-    st.write(f"Image shape: {image_cropped.shape}")
-    st.write(f"Gradient threshold value: {grad_thresh_value}")
-    st.write(f"Pixel size: {pixel_size}")
-    st.write(f"Enable min area filtering: {enable_min_area_filtering}, Min area: {min_area}")
-    st.write(f"Enable max area filtering: {enable_max_area_filtering}, Max area: {max_area}")
-    st.write(f"Circularity threshold: {circularity_thresh}")
-    st.write(f"Manual mask provided: {'Yes' if manual_mask is not None else 'No'}")
     try:
         # Step 1: Generate masks
         if manual_mask is not None:
-            st.write("Manual mode detected.")
             if "final_regions" in st.session_state and st.session_state.final_regions:
                 masks = [
                     {
@@ -1599,10 +1442,6 @@ def segmentation_and_size_analysis(image_cropped, mask_generator, grad_thresh_va
                 }]
         else:
             masks = mask_generator.generate(image_cropped)
-
-        st.write(f"Number of masks before filtering: {len(masks)}")
-        for i, mask in enumerate(masks):
-            st.write(f"Mask {i}: Pre-filtering Area={np.sum(mask['segmentation'])}")
 
         # Step 2: Apply selection mask if enabled
         selection_mask = None
@@ -1623,17 +1462,7 @@ def segmentation_and_size_analysis(image_cropped, mask_generator, grad_thresh_va
                 selection_mask = None
 
         # Step 3: Filter masks based on selection mask
-        st.write(f"Number of masks before filtering: {len(masks)}")
-        for i, mask in enumerate(masks):
-            st.write(f"Mask {i}: Pre-filtering Area={np.sum(mask['segmentation'])}")
         filtered_masks = []
-        if len(filtered_masks) == 0:
-            st.warning(
-                "No masks passed the filtering step. Please adjust the filtering parameters (e.g., area or circularity).")
-        else:
-            st.write(f"Filtered masks count: {len(filtered_masks)}")
-            for i, mask in enumerate(filtered_masks):
-                st.write(f"Filtered Mask {i}: Area={np.sum(mask['segmentation'])}")
         for mask in masks:
             mask_array = mask['segmentation'].astype(np.uint8)  # Ensure uint8 type
 
@@ -1674,13 +1503,6 @@ def segmentation_and_size_analysis(image_cropped, mask_generator, grad_thresh_va
 
         # Step 6: Filter masks based on gradient and circularity
         final_filtered_masks = []
-        st.write(f"Number of masks after gradient and circularity filtering: {len(final_filtered_masks)}")
-        if len(final_filtered_masks) == 0:
-            st.warning("No masks passed the final filtering step (circularity and gradient). Adjust the parameters.")
-        else:
-            st.write(f"Final filtered masks count: {len(final_filtered_masks)}")
-            for i, mask in enumerate(final_filtered_masks):
-                st.write(f"Final Mask {i}: Area={np.sum(mask['segmentation'])}")
         for mask in filtered_masks:
             mask_array = mask['segmentation']
 
@@ -1708,15 +1530,6 @@ def segmentation_and_size_analysis(image_cropped, mask_generator, grad_thresh_va
 
         if len(equiv_diameters_array) == 0:
             st.warning("No valid particles detected. Check the segmentation and filtering steps.")
-        else:
-            st.write(f"Equivalent Diameters (pixels): {equiv_diameters_array}")
-            st.write(f"Particle Areas (real units): {areas}")
-        st.write("Particle Metrics Debugging:")
-        if len(equiv_diameters_array) > 0:
-            st.write(f"Equivalent Diameters: {equiv_diameters_array}")
-            st.write(f"Particle Areas: {areas}")
-        else:
-            st.warning("No particles detected.")
 
         if len(equiv_diameters_array) > 0:
             d10, d50, d90 = np.percentile(equiv_diameters_array, [10, 50, 90])
@@ -1746,9 +1559,6 @@ def segmentation_and_size_analysis(image_cropped, mask_generator, grad_thresh_va
 
         if "final_regions" in st.session_state:
             num_regions = len(st.session_state.final_regions)
-            st.write(f"Regions passed to analysis: {num_regions}")
-            for i, (name, region) in enumerate(st.session_state.final_regions.items()):
-                st.write(f"Region {i} ({name}): Area = {np.sum(region)}")
 
         return filtered_masks, equiv_diameters_array, areas, size_metrics
     except Exception as e:
@@ -1787,9 +1597,6 @@ def shape_analysis_and_porosity(filtered_masks, image_cropped, min_pore_size, is
 
         # Add the current particle to the binary image for display
         particle_binary_image = cv2.bitwise_or(particle_binary_image, mask_array * 255)
-
-        # Log current particle processing
-        st.write(f"Processing particle {i + 1}/{len(filtered_masks)} {'in manual mode' if is_manual_mode else 'in automatic mode'}.")
 
         # Analyze particle region
         particle_region = cv2.bitwise_and(image_cropped, image_cropped, mask=mask_array)
@@ -2535,7 +2342,7 @@ def main():
                 mode = st.radio("Select Mode", ["Automatic Mode", "Manual Mode"], horizontal=True)
                 if mode == "Manual Mode":
                     # Initialize manual mode and predictor
-                    if 'manual_mode' not in st.session_state or 'points' not in st.session_state.manual_mode:
+                    if 'manual_mode' not in st.session_state:
                         initialize_manual_mode()
 
                     if 'image_rgb' not in st.session_state or st.session_state['image_rgb'] is None:
